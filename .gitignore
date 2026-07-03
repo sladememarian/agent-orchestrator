@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.env
+.pytest_cache/
+
+# Sub-agent working checkouts (git_worktree.py) - throwaway, one per card,
+# never meant to be tracked here or in the Collaberry repo.
+.worktrees/

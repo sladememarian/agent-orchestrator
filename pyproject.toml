@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-orchestrator"
+version = "0.1.0"
+description = "A supervised, hierarchical multi-agent system that reads its own task board from Collaberry and writes real code for it — routed through 9router."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx==0.28.1",
+    "openai==1.57.0",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.6.1",
+    "python-dotenv==1.0.1",
+    "rich==13.9.4",
+]
+
+[project.scripts]
+orchestrator = "orchestrator.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["orchestrator*"]
+
+[tool.pytest.ini_options]
+# Keeps this an independently-configured project rather than inheriting the
+# parent Collaberry repo's pytest.ini (testpaths/pythonpath meant for its own
+# services), since agent-orchestrator is published as its own separate repo.
+testpaths = ["tests"]
