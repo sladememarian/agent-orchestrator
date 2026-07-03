@@ -304,6 +304,10 @@ def app() -> None:
     parser = argparse.ArgumentParser(prog="orchestrator")
     sub = parser.add_subparsers(required=True)
 
+    def cmd_help(_: argparse.Namespace) -> int:
+        parser.print_help()
+        return 0
+
     p_board = sub.add_parser("board", help="print the live Kanban board")
     p_board.set_defaults(func=cmd_board)
 
@@ -339,7 +343,10 @@ def app() -> None:
     p_invite = sub.add_parser("invite-bot", help="invite the bot account into your board's workspace")
     p_invite.set_defaults(func=cmd_invite_bot)
 
-    args = parser.parse_args()
+    p_help = sub.add_parser("help", help="list every command")
+    p_help.set_defaults(func=cmd_help)
+
+    args = parser.parse_args(sys.argv[1:] or ["help"])
     sys.exit(args.func(args))
 
 

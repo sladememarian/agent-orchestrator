@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 orchestrator = "orchestrator.cli:app"
+orch = "orchestrator.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["orchestrator*"]

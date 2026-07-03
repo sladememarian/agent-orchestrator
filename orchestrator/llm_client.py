@@ -11,6 +11,7 @@ path turns out not to be ``/v1``, this is the one line to change
 
 from __future__ import annotations
 
+import httpx
 from openai import APIConnectionError, OpenAI
 
 from .config import Settings
@@ -31,7 +32,17 @@ class LLMClientError(RuntimeError):
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = OpenAI(base_url=settings.ninerouter_base_url, api_key=settings.ninerouter_api_key)
+        # trust_env=False bypasses any machine-level HTTP proxy that would
+        # otherwise intercept localhost — the openai SDK's default httpx
+        # client honours HTTP_PROXY/system proxy settings unless told not to,
+        # which is exactly what breaks 9router (also local, also on
+        # localhost) on machines with a proxy agent watching the loopback
+        # interface (see board_client.py's httpx.Client for the same fix).
+        self._client = OpenAI(
+            base_url=settings.ninerouter_base_url,
+            api_key=settings.ninerouter_api_key,
+            http_client=httpx.Client(trust_env=False),
+        )
 
     def model_for(self, role: str) -> str:
         field = _ROLE_MODEL_FIELD.get(role)
