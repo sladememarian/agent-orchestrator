@@ -9,6 +9,11 @@ that fans out to many providers — so the "head" planner and each specialist
 sub-agent can run on a different model, chosen for the job rather than a single
 one-size-fits-all choice.
 
+> **[→ Read the case study](CASE_STUDY.md)** — the résumé-oriented write-up of
+> what this demonstrates: managing a fleet of sub-agents against a live product
+> board, and the real failures (an "agent-runtime" masquerading as a model, a
+> brittle output protocol, rate-limited routes) that shaped the design.
+
 ## Why this exists
 
 Most agent demos operate on a to-do list you type into the terminal. This one
@@ -50,7 +55,7 @@ Actively being built in phases:
 - [x] Phase 2 — head agent plans each card, writes the plan back
 - [x] Phase 3 — one sub-agent implements a card for real, in an isolated worktree
 - [x] Phase 4 — specialist roles (real-time bug-fixer, Makefile tester)
-- [ ] Phase 5 — live dashboard visualizing agents at work
+- [x] Phase 5 — live dashboard visualizing agents at work
 
 ## Running it
 
@@ -89,3 +94,18 @@ Or check the Makefile targets with no LLM call at all:
 ```bash
 orchestrator make-test "test-unit,fe-check"
 ```
+
+## Watching it work: the live dashboard
+
+```bash
+orch dashboard
+```
+
+Opens a small live feed at `http://127.0.0.1:8800` — every role, every card,
+every commit hash and pass/fail, as it happens. `board`/`plan`/`implement`/
+`fix-tests`/`make-test` all best-effort report their activity here; if the
+dashboard isn't running, those commands are unaffected (a half-second timeout,
+then silent no-op) — it's a window to watch through, not a dependency.
+
+Both `orchestrator` and the shorter `orch` work identically for every command
+above; run `orch help` (or bare `orch`) to list them all.
