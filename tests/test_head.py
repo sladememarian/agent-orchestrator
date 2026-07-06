@@ -88,6 +88,78 @@ def test_rerunning_plan_board_is_a_noop_once_everything_is_planned():
     assert len(llm.calls) == 1
 
 
+def test_repo_map_is_included_in_the_system_prompt(tmp_path):
+    (tmp_path / "services").mkdir()
+    (tmp_path / "services" / "workspace_thing.py").write_text("x = 1\n")
+
+    card = _card("1", "fix the thing", description="broken")
+    client = FakeBoardClient([card])
+    llm = FakeLLMClient()
+
+    plan_board(client, llm, repo_path=str(tmp_path))
+
+    system_prompt = llm.calls[0][1]
+    assert "workspace_thing.py" in system_prompt  # the real file, not a guess
+
+
+def test_no_repo_path_still_works(tmp_path):
+    # repo_path is optional - omitting it must not crash, just skip grounding.
+    card = _card("1", "fix the thing", description="broken")
+    client = FakeBoardClient([card])
+    llm = FakeLLMClient()
+
+    planned = plan_board(client, llm)  # no repo_path
+    assert len(planned) == 1
+
+
+def test_on_progress_is_called_for_each_card():
+    events: list[tuple[str, str | None]] = []
+    card = _card("1", "fix the thing", description="broken")
+    client = FakeBoardClient([card])
+    llm = FakeLLMClient()
+
+    plan_board(client, llm, on_progress=lambda msg, item: events.append((msg, item.title if item else None)))
+
+    # at least: a summary line, a "planning: ..." line, and a "planned: ..." line
+    assert any("need a plan" in msg for msg, _ in events)
+    assert any(msg.startswith("planning:") and title == "fix the thing" for msg, title in events)
+    assert any(msg.startswith("planned:") and title == "fix the thing" for msg, title in events)
+
+
+def test_parallel_planning_plans_everything_in_board_order():
+    cards = [_card(str(i), f"card {i}", description="x") for i in range(6)]
+    client = FakeBoardClient(cards)
+    llm = FakeLLMClient()
+
+    planned = plan_board(client, llm, concurrency=3)
+
+    assert [p.item.id for p in planned] == [str(i) for i in range(6)]  # order kept
+    assert len(llm.calls) == 6
+    assert all(client.has_agent_plan(c) for c in cards)
+
+
+def test_parallel_planning_keeps_finished_plans_when_one_card_fails():
+    class FlakyLLM(FakeLLMClient):
+        def chat(self, role, *, system, user):
+            if "card 1" in user:
+                raise RuntimeError("route died")
+            return super().chat(role, system=system, user=user)
+
+    cards = [_card(str(i), f"card {i}", description="x") for i in range(3)]
+    client = FakeBoardClient(cards)
+    llm = FlakyLLM()
+
+    import pytest
+    with pytest.raises(RuntimeError, match="route died"):
+        plan_board(client, llm, concurrency=3)
+
+    # cards 0 and 2 finished and their plans were written despite card 1 dying;
+    # a re-run would only retry the failed one.
+    assert client.has_agent_plan(cards[0])
+    assert not client.has_agent_plan(cards[1])
+    assert client.has_agent_plan(cards[2])
+
+
 def test_describe_content_handles_all_item_types():
     checklist = Item(
         id="c", board_id="b", column_id="x", type="checklist", title="t", order=1.0,
