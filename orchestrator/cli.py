@@ -8,6 +8,7 @@
                                   at an existing worktree (phase 4)
     orchestrator make-test     - run Makefile targets against the Collaberry repo and
                                   report pass/fail, no LLM involved (phase 4)
+    orchestrator dashboard     - run the live dashboard at http://127.0.0.1:8800 (phase 5)
     orchestrator invite-bot    - grant the bot account access to your board
 
 All of these talk to the real, running Collaberry stack over its public API.
@@ -22,12 +23,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+# LLM output routinely contains Unicode (arrows, em-dashes, box glyphs) that a
+# legacy Windows console codepage (e.g. cp1256) can't encode - printing it
+# would crash rich mid-render. Force UTF-8 with a replace fallback so a stray
+# glyph degrades to '?' instead of taking down the whole command. Must run
+# before the module-level Console() below captures the stream config.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 import httpx
 from rich.console import Console
 from rich.table import Table
 
 from .board_client import BoardClient, BoardClientError
 from .config import get_settings
+from .dashboard.events import emit
 from .git_worktree import GitWorktreeError, Worktree
 from .llm_client import LLMClient, LLMClientError
 from .roles.developer import DeveloperError, implement_card
@@ -83,17 +96,48 @@ def cmd_board(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_plan(_: argparse.Namespace) -> int:
+def cmd_plan(args: argparse.Namespace) -> int:
     settings = get_settings()
+    concurrency = args.parallel if args.parallel is not None else settings.plan_concurrency
+
+    def on_progress(message: str, item) -> None:
+        # `status` is bound below by the time this actually runs - plan_board
+        # only calls it from inside the `with console.status(...)` block.
+        # With concurrency > 1 this fires from worker threads; rich's Console
+        # locks internally, so prints/updates interleave safely.
+        if message.startswith("planning:"):
+            status.update(f"[cyan]{message}[/]")
+            emit(settings, role="head", action="planning", card_title=item.title if item else None)
+        elif message.startswith("planned:"):
+            plan_text = item.data.get("agent_plan", "") if item else ""
+            status.update(f"[cyan]{message}[/]")
+            console.print(f"\n[bold cyan]{item.title}[/]  ({item.type})")
+            console.print(plan_text)
+            # The dashboard event feed is a scannable log, not a document
+            # viewer - send the full plan but the feed itself displays it
+            # compactly; no truncation needed since it's a single POST, not
+            # something re-sent on every poll.
+            emit(settings, role="head", action="planned card", card_title=item.title, detail=plan_text, status="success")
+        elif message.startswith("failed:"):
+            console.print(f"[bold red]{message}[/]")
+            emit(settings, role="head", action="planning failed", card_title=item.title if item else None, detail=message, status="error")
+        else:
+            status.update(f"[dim]{message}[/]")
+
     try:
         with BoardClient(settings) as client:
             client.connect()
             llm = LLMClient(settings)
-            planned = plan_board(client, llm)
+            with console.status("[cyan]Reading the board...[/]", spinner="dots") as status:
+                planned = plan_board(
+                    client, llm, repo_path=settings.collaberry_repo_path,
+                    on_progress=on_progress, concurrency=concurrency,
+                )
     except BoardClientError as exc:
         console.print(f"[bold red]Can't read the board:[/] {exc}")
         return 1
     except LLMClientError as exc:
+        emit(settings, role="head", action="planning failed", detail=str(exc), status="error")
         console.print(f"[bold red]9router error:[/] {exc}")
         return 1
     except httpx.HTTPError as exc:
@@ -104,9 +148,6 @@ def cmd_plan(_: argparse.Namespace) -> int:
         console.print("Every card already has a plan. Nothing to do.")
         return 0
 
-    for pc in planned:
-        console.print(f"\n[bold cyan]{pc.item.title}[/]  ({pc.item.type})")
-        console.print(pc.plan)
     console.print(f"\n[bold green]Planned {len(planned)} card(s).[/]")
     return 0
 
@@ -141,6 +182,7 @@ def cmd_implement(args: argparse.Namespace) -> int:
 
             llm = LLMClient(settings)
             console.print(f"Implementing [cyan]{item.title}[/] in an isolated worktree...")
+            emit(settings, role="developer", action="started", card_title=item.title)
             result = implement_card(
                 item=item, client=client, llm=llm,
                 repo_path=settings.collaberry_repo_path,
@@ -150,15 +192,23 @@ def cmd_implement(args: argparse.Namespace) -> int:
         console.print(f"[bold red]Can't read the board:[/] {exc}")
         return 1
     except LLMClientError as exc:
+        emit(settings, role="developer", action="implementation failed", card_title=args.title, detail=str(exc), status="error")
         console.print(f"[bold red]9router error:[/] {exc}")
         return 1
     except DeveloperError as exc:
+        emit(settings, role="developer", action="implementation failed", card_title=args.title, detail=str(exc), status="error")
         console.print(f"[bold red]Couldn't implement this card:[/] {exc}")
         return 1
     except httpx.HTTPError as exc:
         console.print(f"[bold red]Couldn't reach Collaberry at {settings.collaberry_gateway_url}:[/] {exc}")
         return 1
 
+    emit(
+        settings, role="developer",
+        action="committed" if result.test_passed is not False else "committed (tests failing)",
+        card_title=item.title, detail=result.commit_hash,
+        status="success" if result.test_passed is not False else "error",
+    )
     console.print(f"\n[bold green]Committed locally[/] ({result.commit_hash}) on branch [cyan]{result.worktree.branch}[/]")
     console.print(f"Changed files: {', '.join(result.changed_files)}")
     if result.test_command:
@@ -211,6 +261,7 @@ def cmd_fix_tests(args: argparse.Namespace) -> int:
     failing_output = (first_run.stdout + first_run.stderr)[-3000:]
     llm = LLMClient(settings)
     console.print(f"Tests are failing on branch [cyan]{worktree.branch}[/]. Attempting one fix pass...")
+    emit(settings, role="realtime_fixer", action="started", card_title=worktree.branch)
 
     try:
         result = fix_failing_tests(
@@ -218,12 +269,20 @@ def cmd_fix_tests(args: argparse.Namespace) -> int:
             failing_output=failing_output, candidate_files=candidate_files,
         )
     except LLMClientError as exc:
+        emit(settings, role="realtime_fixer", action="fix attempt failed", card_title=worktree.branch, detail=str(exc), status="error")
         console.print(f"[bold red]9router error:[/] {exc}")
         return 1
     except RealtimeFixerError as exc:
+        emit(settings, role="realtime_fixer", action="fix attempt failed", card_title=worktree.branch, detail=str(exc), status="error")
         console.print(f"[bold red]Couldn't attempt a fix:[/] {exc}")
         return 1
 
+    emit(
+        settings, role="realtime_fixer",
+        action="fixed" if result.test_passed else "fix attempt did not pass",
+        card_title=worktree.branch, detail=result.commit_hash,
+        status="success" if result.test_passed else "error",
+    )
     verdict = "[bold green]now passing[/]" if result.test_passed else "[bold red]still failing[/]"
     console.print(f"\nAfter one fix attempt: tests are {verdict}")
     console.print(f"Changed files: {', '.join(result.changed_files)}")
@@ -244,9 +303,59 @@ def cmd_make_test(args: argparse.Namespace) -> int:
         console.print(f"{r.target}: {verdict}")
         if not r.passed:
             console.print(r.output)
+        emit(
+            settings, role="makefile_tester", action=f"make {r.target}",
+            detail="passed" if r.passed else "failed", status="success" if r.passed else "error",
+        )
 
     console.print(f"\n{report.summary_line()}")
     return 0 if report.all_passed else 1
+
+
+def cmd_mark_done(args: argparse.Namespace) -> int:
+    """Move a card to the board's Done column and record it as a delivered
+    success on the dashboard. Use this when the *manager* finishes a card
+    directly (rather than a sub-agent), so the dashboard reflects real
+    completions, not just agent-run events.
+    """
+    settings = get_settings()
+    try:
+        with BoardClient(settings) as client:
+            client.connect()
+            matches = [i for i in client.list_items() if args.title.lower() in i.title.lower()]
+            if not matches:
+                console.print(f"[bold red]No card title contains {args.title!r}.[/]")
+                return 1
+            if len(matches) > 1:
+                console.print(f"[bold red]{len(matches)} cards match {args.title!r} - be more specific:[/]")
+                for m in matches:
+                    console.print(f"  - {m.title}")
+                return 1
+            item = matches[0]
+            client.move_item_to_column(item.id, args.column)
+    except BoardClientError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        return 1
+    except httpx.HTTPError as exc:
+        console.print(f"[bold red]Couldn't reach Collaberry:[/] {exc}")
+        return 1
+
+    emit(settings, role="manager", action="delivered", card_title=item.title,
+         detail=args.note or "", status="success")
+    console.print(f"[bold green]Moved[/] [cyan]{item.title}[/] -> {args.column} and recorded it on the dashboard.")
+    return 0
+
+
+def cmd_dashboard(_: argparse.Namespace) -> int:
+    import uvicorn
+
+    settings = get_settings()
+    console.print(
+        f"Dashboard at [cyan]http://{settings.dashboard_host}:{settings.dashboard_port}[/] "
+        "- Ctrl+C to stop."
+    )
+    uvicorn.run("orchestrator.dashboard.server:app", host=settings.dashboard_host, port=settings.dashboard_port)
+    return 0
 
 
 def cmd_invite_bot(_: argparse.Namespace) -> int:
@@ -312,6 +421,11 @@ def app() -> None:
     p_board.set_defaults(func=cmd_board)
 
     p_plan = sub.add_parser("plan", help="have the head agent plan every unplanned card")
+    p_plan.add_argument(
+        "--parallel", type=int, default=None, metavar="N",
+        help="plan N cards concurrently (default: PLAN_CONCURRENCY from .env, 3). "
+             "Use 1 to force the old serial behaviour.",
+    )
     p_plan.set_defaults(func=cmd_plan)
 
     p_implement = sub.add_parser(
@@ -339,6 +453,9 @@ def app() -> None:
     p_make = sub.add_parser("make-test", help="run Makefile targets against the Collaberry repo (no LLM call)")
     p_make.add_argument("targets", help='comma-separated make targets, e.g. "test-unit,fe-check"')
     p_make.set_defaults(func=cmd_make_test)
+
+    p_dashboard = sub.add_parser("dashboard", help="run the live dashboard (phase 5) at http://127.0.0.1:8800")
+    p_dashboard.set_defaults(func=cmd_dashboard)
 
     p_invite = sub.add_parser("invite-bot", help="invite the bot account into your board's workspace")
     p_invite.set_defaults(func=cmd_invite_bot)
