@@ -118,7 +118,7 @@ def test_model_cannot_escape_the_candidate_file_set(scratch_repo):
     client = FakeBoardClient()
     item = _card_with_plan()
 
-    with pytest.raises(DeveloperError, match="no edits"):
+    with pytest.raises(DeveloperError, match="no usable edits"):
         implement_card(item=item, client=client, llm=llm, repo_path=scratch_repo, candidate_files=["app.py"])
 
 

@@ -21,21 +21,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..board_client import BoardClient, Item
-from ..edit_protocol import EditProtocolError, parse_llm_file_edits, read_candidate_files
+from ..edit_protocol import (
+    EDIT_FORMAT_INSTRUCTIONS,
+    EditProtocolError,
+    parse_llm_file_edits,
+    read_candidate_files,
+)
 from ..git_worktree import Worktree, close_worktree, commit_all, open_worktree
 from ..llm_client import LLMClient
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = f"""\
 You are a software engineer implementing one task card for Collaberry, a \
 real-time project workspace app (FastAPI microservices, MongoDB, Redis, \
 Envoy gateway, React Native/Expo frontend).
 
 You will be given a card's title, its plan, and the full current contents of \
-a fixed set of files. Respond with ONLY a JSON object mapping each file path \
-(exactly as given, relative to the repo root) to that file's COMPLETE new \
-content after your change. Do not include files you did not change. Do not \
-include any file path that was not given to you. Do not include explanation \
-text, markdown fences, or anything outside the JSON object itself."""
+a fixed set of files. Make the change the card asks for, touching only those \
+files.
+
+{EDIT_FORMAT_INSTRUCTIONS}"""
 
 
 class DeveloperError(RuntimeError):

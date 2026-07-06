@@ -44,9 +44,17 @@ def run_make_targets(repo_path: str | Path, targets: list[str]) -> MakefileTestR
     repo = Path(repo_path).resolve()
     results: list[TargetResult] = []
     for target in targets:
-        proc = subprocess.run(
-            ["make", target], cwd=repo, capture_output=True, text=True,
-        )
-        output = (proc.stdout + proc.stderr)[-4000:]
-        results.append(TargetResult(target=target, passed=proc.returncode == 0, output=output))
+        try:
+            proc = subprocess.run(
+                ["make", target], cwd=repo, capture_output=True, text=True,
+            )
+            output = (proc.stdout + proc.stderr)[-4000:]
+            passed = proc.returncode == 0
+        except FileNotFoundError:
+            # No `make` on this machine at all - report it as a failed target
+            # rather than crashing the whole command; every other target in
+            # the same call still gets a fair attempt.
+            output = "`make` is not installed (or not on PATH) on this machine."
+            passed = False
+        results.append(TargetResult(target=target, passed=passed, output=output))
     return MakefileTestReport(results=results)

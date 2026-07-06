@@ -19,11 +19,16 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..edit_protocol import EditProtocolError, parse_llm_file_edits, read_candidate_files
+from ..edit_protocol import (
+    EDIT_FORMAT_INSTRUCTIONS,
+    EditProtocolError,
+    parse_llm_file_edits,
+    read_candidate_files,
+)
 from ..git_worktree import Worktree, commit_all
 from ..llm_client import LLMClient
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = f"""\
 You are the real-time bug-fixer for Collaberry, a real-time project workspace \
 app (FastAPI microservices, MongoDB, Redis, Envoy gateway, React Native/Expo \
 frontend). Another agent just made a change and its test run failed.
@@ -31,9 +36,9 @@ frontend). Another agent just made a change and its test run failed.
 You will be given the failing test output and the complete current contents \
 of the files that change touched. Make the SMALLEST possible correction that \
 fixes the failure - do not refactor, do not touch anything unrelated to the \
-failure. Respond with ONLY a JSON object mapping each file path (exactly as \
-given) to that file's COMPLETE corrected content. Do not include files you \
-did not change, files you weren't shown, or any text outside the JSON object."""
+failure.
+
+{EDIT_FORMAT_INSTRUCTIONS}"""
 
 
 class RealtimeFixerError(RuntimeError):

@@ -113,7 +113,7 @@ def test_fix_cannot_touch_files_outside_the_last_commit(broken_worktree):
     sneaky = json.dumps({"unrelated.py": "x = 999"})
     llm = FixedReplyLLM(sneaky)
 
-    with pytest.raises(RealtimeFixerError, match="no edits"):
+    with pytest.raises(RealtimeFixerError, match="no usable edits"):
         fix_failing_tests(
             worktree=broken_worktree, llm=llm,
             test_command=["python", "-c", "pass"],
